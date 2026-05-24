@@ -1,0 +1,236 @@
+import numpy as np
+import pandas as pd
+import matplotlib
+matplotlib.use("Agg")
+
+import matplotlib.pyplot as plt
+
+from plotnine import *
+
+import numcosmo_py.plotting
+import getdist
+from getdist import plots
+import matplotlib.pyplot as plt
+
+
+from numcosmo_py import Nc, Ncm
+from numcosmo_py.plotting import mcat_to_catalog_data
+
+# Inicializando a biblioteca
+Ncm.cfg_init()
+
+# Escolhendo o modelo
+cosmo = Nc.HICosmoLCDM()
+
+# Reparametrizando
+cosmo.omegab_omegak()
+
+#Escolhendo quais parâmetros entraão no processo de inferência
+cosmo.props.H0_fit = True
+cosmo.props.Omegac_fit = True
+cosmo.props.Omegax_fit = True
+
+#Incializando o dist
+dist = Nc.Distance(zf=3.0)
+
+# Definindo o modelo astrofísico de supernovas.
+snia_model = Nc.SNIADistCov.new_by_id(dist,Nc.DataSNIAId.COV_PANTHEON_PLUS_SH0ES_SYS_STAT)
+snia_model.props.M1_fit = False
+
+# Definindo o modelo a ser usado no processo de Restrição
+mset = Ncm.MSet()
+mset.set(cosmo)
+mset.set(snia_model)
+
+#Definindo conjunto de dados.
+snia = Nc.DataSNIACov.new_from_cat_id(Nc.DataSNIAId.COV_PANTHEON_PLUS_SH0ES_SYS_STAT, False)
+
+# Definindo qual amostra será utilizada
+dset = Ncm.Dataset()
+dset.append_data(snia)
+
+lh = Ncm.Likelihood(dataset=dset)
+
+fit = Ncm.Fit.factory(
+    Ncm.FitType.NLOPT, "ln-neldermead", lh, mset, Ncm.FitGradType.NUMDIFF_FORWARD
+)
+
+fit.run_restart(Ncm.FitRunMsgs.SIMPLE, 1.0e-3, 0.0, None, None)
+
+fit.log_info()
+
+fit.fisher()
+
+fit.log_covar()
+
+# intervalos de confiança.
+lhr1dc = Ncm.LHRatio1d.new(fit,mset.fparam_get_pi_by_name("Omegac"),1.0e-3)
+lhr1dh = Ncm.LHRatio1d.new(fit,mset.fparam_get_pi_by_name("H0"),1.0e-3)
+lhr1dx = Ncm.LHRatio1d.new(fit,mset.fparam_get_pi_by_name("Omegax"),1.0e-3)
+
+Ic=lhr1dc.get.bounds
+Ih=lhr1dh.get.bounds
+Ix=lhr1dx.get.bounds
+
+print(Ic)
+print(Ih)
+print(Ix)
+
+# Regiões de confiança.
+lhr2dcx = Ncm.LHRatio2d.new(fit,mset.fparam_get_pi_by_name("Omegac"),mset.fparam_get_pi_by_name("Omegax"),1.0e-3)
+lhr2dch = Ncm.LHRatio2d.new(fit,mset.fparam_get_pi_by_name("Omegac"),mset.fparam_get_pi_by_name("H0"),1.0e-3)
+lhr2dhx = Ncm.LHRatio2d.new(fit,mset.fparam_get_pi_by_name("H0"),mset.fparam_get_pi_by_name("Omegax"),1.0e-3)
+
+best_Omegac = cosmo.props.Omegac
+best_Omegax = cosmo.props.Omegax
+best_H0 = cosmo.props.H0
+
+regiaocx = lhr2dcx.conf_region(Ncm.C.stats_1sigma(), 100.0, Ncm.FitRunMsgs.NONE)
+Omegac_a = np.array(regiaocx.p1.dup_array())
+Omegax_a = np.array(regiaocx.p2.dup_array())
+
+regiaoch = lhr2dch.conf_region(Ncm.C.stats_1sigma(), 100.0, Ncm.FitRunMsgs.NONE)
+Omegac2_a = np.array(regiaoch.p1.dup_array())
+H = np.array(regiaoch.p2.dup_array())
+
+regiaohx = lhr2dhx.conf_region(Ncm.C.stats_1sigma(), 100.0, Ncm.FitRunMsgs.NONE)
+H2 = np.array(regiaohx.p1.dup_array())
+Omegax2_a = np.array(regiaohx.p2.dup_array())
+
+regions_pd_list = []
+regions_pd_list.append(
+    pd.DataFrame(
+        {
+            "Omegac": Omegac_a,
+            "Omegax": Omegax_a,
+            "Omegac2": Omegac2_a,
+            "H_0": H,
+            "H_02": H2,
+            "Omegax2": Omegax2_a,
+        }
+    )
+)
+
+
+
+
+# Gráfico 1: Omegac x Omegax
+
+regions_pd = pd.concat(regions_pd_list)
+
+fig, ax = plt.subplots(figsize=(8,6))
+
+df = regions_pd
+
+ax.fill(
+    df["Omegac"],
+    df["Omegax"],
+    alpha=0.3,
+    color= "red"
+    )
+
+ax.plot(
+    df["Omegac"],
+    df["Omegax"],
+    color="red"
+    )
+
+# ponto best-fit
+ax.scatter(
+    best_Omegac,
+    best_Omegax,
+    color="black",
+    marker="x",
+    s=100,
+    label="Best-fit"
+)
+
+ax.set_xlabel(r"$\Omega_c$")
+ax.set_ylabel(r"$\Omega_x$")
+
+ax.legend()
+
+plt.tight_layout()
+
+plt.savefig("regiaopl_Omegac_Omegax.png", dpi=300)
+
+plt.close()
+# Gráfico 2: Omegac x H0
+
+
+fig, ax = plt.subplots(figsize=(8,6))
+
+ax.fill(
+    df["Omegac2"],
+    df["H_0"],
+    alpha=0.3,
+    color="blue"
+)
+
+ax.plot(
+    df["Omegac2"],
+    df["H_0"],
+    color="blue"
+)
+
+# ponto best-fit
+ax.scatter(
+    best_Omegac,
+    best_H0,
+    color="black",
+    marker="x",
+    s=100,
+    label="Best-fit"
+)
+
+ax.set_xlabel(r"$\Omega_c$")
+ax.set_ylabel(r"$H_0$")
+
+ax.legend()
+
+plt.tight_layout()
+
+plt.savefig("regiaopl_Omegac_H0.png", dpi=300)
+
+plt.close()
+
+# Gráfico 3: H0 x Omegax
+
+fig, ax = plt.subplots(figsize=(8,6))
+
+ax.fill(
+    df["H_02"],
+    df["Omegax2"],
+    alpha=0.3,
+    color="green"
+)
+
+ax.plot(
+    df["H_02"],
+    df["Omegax2"],
+    color="green"
+)
+
+# ponto best-fit
+ax.scatter(
+    best_H0,
+    best_Omegax,
+    color="black",
+    marker="x",
+    s=100,
+    label="Best-fit"
+)
+
+ax.set_xlabel(r"$H_0$")
+ax.set_ylabel(r"$\Omega_x$")
+
+ax.legend()
+
+plt.tight_layout()
+
+plt.savefig("regiaopl_H0_Omegax.png", dpi=300)
+
+plt.close()
+
+
+
