@@ -1,0 +1,183 @@
+import numpy as np
+import pandas as pd
+import matplotlib
+matplotlib.use("Agg")   
+import numcosmo_py.plotting
+import getdist
+from getdist import plots
+import matplotlib.pyplot as plt
+from numcosmo_py import Nc, Ncm
+from numcosmo_py.plotting import mcat_to_catalog_data
+
+# Inicializando a biblioteca
+Ncm.cfg_init()
+
+# Escolhendo o modelo
+cosmo = Nc.HICosmoLCDM()
+
+#Reparametrização.
+#cosmo.omega_xomega_k()
+
+
+#Escolhendo quais parâmetros entraão no processo de inferência
+cosmo.props.H0_fit = True
+cosmo.props.Omegab_fit = False
+cosmo.props.Omegac_fit = True
+cosmo.props.Omegax_fit = True
+
+#Incializando o dist e definindo o redshift de optmização
+dist = Nc.Distance(zf=3.0)
+
+
+# Definindo o modelo astrofísico de supernova
+snia_idval = Nc.DataSNIAId.COV_PANTHEON_PLUS_SH0ES_SYS_STAT
+snia_model = Nc.SNIADistCov.new_by_id(dist, snia_idval)
+snia_model.props.M1_fit = False
+
+# Definindo o modelo a ser usado no processo de Restrição
+mset = Ncm.MSet()
+mset.set(cosmo)
+mset.set(snia_model)
+
+snia = Nc.DataSNIACov.new_from_cat_id(snia_idval, False)
+
+# Definindo qual amostra será utilizada
+dset = Ncm.Dataset()
+dset.append_data(snia)
+
+# Definindo outra parte da Hipótese
+lh = Ncm.Likelihood(dataset=dset)
+
+# Definindo os aspectos do Fit, método de encontrar máximos e mínimos, qual likelihood está sendo empregada, modelo, método de cálculo de derivada. 
+fit = Ncm.Fit.factory(
+    Ncm.FitType.NLOPT, "ln-neldermead", lh, mset, Ncm.FitGradType.NUMDIFF_FORWARD
+)
+
+fit.run_restart(Ncm.FitRunMsgs.SIMPLE, 1.0e-3, 0.0, None, None)
+
+fit.log_info()
+
+#Calculando a matriz de covariância e a matriz de correlação.
+fit.fisher()
+
+fit.log_covar()
+
+
+
+#
+# Definindo Kernel, proposal covariance e prior
+#
+kernel = Ncm.MSetTransKernGauss.new(0)
+kernel.set_mset(mset)
+kernel.set_prior_from_mset()
+kernel.set_cov(fit.get_covar())
+
+
+#Aqui é interessante perceber que o código utiliza uma estimativa frequenista gerar um fit e uma matriz de covariância
+#para serem usados na abordagem Bayesiana.
+
+#
+# MCMC
+# Definindo os parâmetros do algoritmo, ponto inicial, distribuição de exploração que serão colocados no algoritmo.
+mcmc = Ncm.FitMCMC.new(
+    fit,
+    kernel,
+    Ncm.FitRunMsgs.SIMPLE
+)
+
+#Criando o arquivo que contém a cadeia
+mcmc.set_data_file("MCMC")
+
+mcmc.start_run()
+
+#Número de amostras
+mcmc.run(3000)
+
+mcmc.end_run()
+
+# Cálcula a média do posterior e a matriz de covariância e correlação
+# e depois mostra como resultados
+mcmc.mean_covar()
+fit.log_covar()
+
+#Essa parte do código monta o gráfico de triângulo.
+mcat = mcmc.get_catalog()
+cd = mcat_to_catalog_data(mcat, name="MCMC")
+g = plots.get_subplot_plotter()
+g.triangle_plot(cd.to_mcsamples(), shaded=False, filled=True)
+plt.savefig("triangle2.png", dpi=300, bbox_inches="tight")
+
+# Número de amostras
+nrows = mcat.len()
+
+# Extraindo valores da cadeia em cada dimensão.
+H0_chain      = []
+Omegac_chain  = []
+Omegax_chain  = []
+
+for i in range(nrows):
+    row = mcat.peek_row(i)
+
+    # índices dos parâmetros no modelo
+    H0_chain.append(row.get(1))
+    Omegac_chain.append(row.get(2))
+    Omegax_chain.append(row.get(3))
+
+# Convertendo para numpy
+H0_chain = np.array(H0_chain)
+Omegac_chain = np.array(Omegac_chain)
+Omegax_chain = np.array(Omegax_chain)
+
+# Extraindo o valor do posterior para cada elemento da cadeia.
+posterior = []
+
+for i in range(nrows):
+
+    row = mcat.peek_row(i)
+
+    # valor do posterior
+    posterior.append(row.get(0))
+
+posterior = np.array(posterior)
+
+# Índice das amostras
+steps = np.arange(nrows)
+
+
+# Trace plots das amostras.
+
+fig, ax = plt.subplots(3, 1, figsize=(10, 8), sharex=True)
+
+ax[0].plot(steps, H0_chain, lw=0.5)
+ax[0].set_ylabel(r"$H_0$")
+
+ax[1].plot(steps, Omegac_chain, lw=0.5)
+ax[1].set_ylabel(r"$\Omega_c$")
+
+ax[2].plot(steps, Omegax_chain, lw=0.5)
+ax[2].set_ylabel(r"$\Omega_x$")
+ax[2].set_xlabel("MCMC step")
+
+plt.tight_layout()
+plt.savefig("traceplot.png", dpi=300)
+
+
+# Trace plots das amostras.
+steps = np.arange(nrows)
+
+plt.figure(figsize=(10,5))
+
+plt.plot(steps, posterior, lw=0.5)
+
+plt.xlabel("MCMC step")
+plt.ylabel("log posterior")
+
+plt.tight_layout()
+
+plt.savefig("evoluçaoposterior.png", dpi=300)
+
+
+
+
+
+
