@@ -2,11 +2,11 @@ import numpy as np
 import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
-
+from scipy.stats import norm
 import matplotlib.pyplot as plt
-
+from scipy.stats import kstest, kstwo
 from plotnine import *
-
+from scipy import stats
 import numcosmo_py.plotting
 import getdist
 from getdist import plots
@@ -16,23 +16,38 @@ import matplotlib.pyplot as plt
 from numcosmo_py import Nc, Ncm
 from numcosmo_py.plotting import mcat_to_catalog_data
 
+#>======================================================<#
+#      Definindo modelos cosmológicos e astrofísicos.
+#                         &
+#      Escolhendo qual conjunto de dados será usado.
+#                         &
+#             Definindo a verossimilhança                 
+#>======================================================<#
+
+
 # Inicializando a biblioteca
 Ncm.cfg_init()
 
 # Escolhendo o modelo
-cosmo = Nc.HICosmoLCDM()
+cosmo = Nc.HICosmoDEXcdm()
+
+#Reparametrização.
+cosmo.omega_x2omega_k()
+#Universo plano
+cosmo.param_set_by_name("Omegak", 0.0)
 
 #Escolhendo quais parâmetros entraão no processo de inferência
 cosmo.props.H0_fit = True
+cosmo.props.Omegab_fit = False
 cosmo.props.Omegac_fit = True
-cosmo.props.Omegax_fit = True
+cosmo.props.w_fit = True
 
 #Incializando o dist
 dist = Nc.Distance(zf=3.0)
 
 # Definindo o modelo astrofísico de supernovas.
 snia_model = Nc.SNIADistCov.new_by_id(dist,Nc.DataSNIAId.COV_PANTHEON_PLUS_SH0ES_SYS_STAT)
-snia_model.props.M1_fit = False
+snia_model.props.M1_fit = True
 
 # Definindo o modelo a ser usado no processo de Restrição
 mset = Ncm.MSet()
@@ -46,8 +61,15 @@ snia = Nc.DataSNIACov.new_from_cat_id(Nc.DataSNIAId.COV_PANTHEON_PLUS_SH0ES_SYS_
 dset = Ncm.Dataset()
 dset.append_data(snia)
 
+
+# Definindo outra parte da Hipótese
 lh = Ncm.Likelihood(dataset=dset)
 
+#>======================================================<#
+#                  Ajuste frequêntista.
+#>======================================================<#
+
+# Definindo os aspectos do Fit, método de encontrar máximos e mínimos, qual likelihood está sendo empregada, modelo, método de cálculo de derivada. 
 fit = Ncm.Fit.factory(
     Ncm.FitType.NLOPT, "ln-neldermead", lh, mset, Ncm.FitGradType.NUMDIFF_FORWARD
 )
@@ -60,115 +82,148 @@ fit.fisher()
 
 fit.log_covar()
 
+
+#>======================================================<#
+#                Regiões de credibilidade.
+#>======================================================<#
+
 # intervalos de confiança.
 lhr1dc = Ncm.LHRatio1d.new(fit,mset.fparam_get_pi_by_name("Omegac"))
 lhr1dh = Ncm.LHRatio1d.new(fit,mset.fparam_get_pi_by_name("H0"))
-lhr1dx = Ncm.LHRatio1d.new(fit,mset.fparam_get_pi_by_name("Omegax"))
+lhr1dw = Ncm.LHRatio1d.new(fit,mset.fparam_get_pi_by_name("w"))
+lhr1dM = Ncm.LHRatio1d.new(fit,mset.fparam_get_pi_by_name("M1"))
 
+'''
+# Essa parte cacula perfilamento para intervalo 1d
+# custo computacional alto
+'''
 Ic=lhr1dc.find_bounds(Ncm.C.stats_1sigma(),Ncm.FitRunMsgs.NONE)
 Ih=lhr1dh.find_bounds(Ncm.C.stats_1sigma(),Ncm.FitRunMsgs.NONE)
-Ix=lhr1dx.find_bounds(Ncm.C.stats_1sigma(),Ncm.FitRunMsgs.NONE)
+Ix=lhr1dw.find_bounds(Ncm.C.stats_1sigma(),Ncm.FitRunMsgs.NONE)
+IM=lhr1dM.find_bounds(Ncm.C.stats_1sigma(),Ncm.FitRunMsgs.NONE)
 
 print(Ic)
 print(Ih)
 print(Ix)
-
-
+print(IM)
+'''
+'''
 # Regiões de confiança.
-lhr2dcx = Ncm.LHRatio2d.new(fit,mset.fparam_get_pi_by_name("Omegac"),mset.fparam_get_pi_by_name("Omegax"),1.0e-3)
+lhr2dcw = Ncm.LHRatio2d.new(fit,mset.fparam_get_pi_by_name("Omegac"),mset.fparam_get_pi_by_name("w"),1.0e-3)
 lhr2dch = Ncm.LHRatio2d.new(fit,mset.fparam_get_pi_by_name("Omegac"),mset.fparam_get_pi_by_name("H0"),1.0e-3)
-lhr2dhx = Ncm.LHRatio2d.new(fit,mset.fparam_get_pi_by_name("H0"),mset.fparam_get_pi_by_name("Omegax"),1.0e-3)
+lhr2dhw = Ncm.LHRatio2d.new(fit,mset.fparam_get_pi_by_name("H0"),mset.fparam_get_pi_by_name("w"),1.0e-3)
+lhr2dcM = Ncm.LHRatio2d.new(fit,mset.fparam_get_pi_by_name("Omegac"),mset.fparam_get_pi_by_name("M1"),1.0e-3)
+lhr2dhM = Ncm.LHRatio2d.new(fit,mset.fparam_get_pi_by_name("H0"),mset.fparam_get_pi_by_name("M1"),1.0e-3)
+lhr2dwM = Ncm.LHRatio2d.new(fit,mset.fparam_get_pi_by_name("w"),mset.fparam_get_pi_by_name("M1"),1.0e-3)
 
+best_w = cosmo.props.w
 best_Omegac = cosmo.props.Omegac
-best_Omegax = cosmo.props.Omegax
 best_H0 = cosmo.props.H0
+best_M = snia_model.props.M1
 
-regiaocx = lhr2dcx.fisher_border(Ncm.C.stats_1sigma(), 300.0, Ncm.FitRunMsgs.NONE)
-Omegac_a = np.array(regiaocx.p1.dup_array())
-Omegax_a = np.array(regiaocx.p2.dup_array())
+regiaocw = lhr2dcw.fisher_border(Ncm.C.stats_1sigma(), 300.0, Ncm.FitRunMsgs.SIMPLE)
+Omegac_a = np.array(regiaocw.p1.dup_array())
+w_a = np.array(regiaocw.p2.dup_array())
 
-regiaoch = lhr2dch.fisher_border(Ncm.C.stats_1sigma(), 300.0, Ncm.FitRunMsgs.NONE)
+regiaoch = lhr2dch.fisher_border(Ncm.C.stats_1sigma(), 300.0, Ncm.FitRunMsgs.SIMPLE)
 Omegac2_a = np.array(regiaoch.p1.dup_array())
 H = np.array(regiaoch.p2.dup_array())
 
-regiaohx = lhr2dhx.fisher_border(Ncm.C.stats_1sigma(), 300.0, Ncm.FitRunMsgs.NONE)
-H2 = np.array(regiaohx.p1.dup_array())
-Omegax2_a = np.array(regiaohx.p2.dup_array())
+regiaohw = lhr2dhw.fisher_border(Ncm.C.stats_1sigma(), 300.0, Ncm.FitRunMsgs.SIMPLE)
+H2 = np.array(regiaohw.p1.dup_array())
+w2_a = np.array(regiaohw.p2.dup_array())
 
-regions_pd_list = []
-regions_pd_list.append(
-    pd.DataFrame(
-        {
-            "Omegac": Omegac_a,
-            "Omegax": Omegax_a,
-            "Omegac2": Omegac2_a,
-            "H_0": H,
-            "H_02": H2,
-            "Omegax2": Omegax2_a,
-        }
-    )
+regiaocM = lhr2dcM.fisher_border(
+    Ncm.C.stats_1sigma(),
+    300.0,
+    Ncm.FitRunMsgs.SIMPLE
+)
+Omegac_M = np.array(regiaocM.p1.dup_array())
+M_c = np.array(regiaocM.p2.dup_array())
+
+regiaohM = lhr2dhM.fisher_border(
+    Ncm.C.stats_1sigma(),
+    300.0,
+    Ncm.FitRunMsgs.SIMPLE
+)
+H_M = np.array(regiaohM.p1.dup_array())
+M_h = np.array(regiaohM.p2.dup_array())
+
+regiaowM = lhr2dwM.fisher_border(
+    Ncm.C.stats_1sigma(),
+    300.0,
+    Ncm.FitRunMsgs.SIMPLE
 )
 
+w_M = np.array(regiaowM.p1.dup_array())
+M_w = np.array(regiaowM.p2.dup_array())
 
 
+# Gráfico 1: Omegac x w
 
-# Gráfico 1: Omegac x Omegax
 
-regions_pd = pd.concat(regions_pd_list)
+# fontes e tamanhos bons para TCC
+plt.rcParams.update({
+    "font.family": "serif",
+    "font.size": 14,
+    "axes.labelsize": 16,
+    "axes.titlesize": 16,
+    "legend.fontsize": 12,
+})
 
 fig, ax = plt.subplots(figsize=(8,6))
 
-df = regions_pd
 
 ax.fill(
-    df["Omegac"],
-    df["Omegax"],
+    Omegac_a,
+    w_a,
     alpha=0.3,
     color= "red"
     )
 
 ax.plot(
-    df["Omegac"],
-    df["Omegax"],
+    Omegac_a,
+    w_a,
     color="red"
     )
 
 # ponto best-fit
 ax.scatter(
     best_Omegac,
-    best_Omegax,
+    best_w,
     color="black",
     marker="x",
     s=100,
-    label="Best-fit"
+    label="Estimativa"
 )
 
 ax.set_xlabel(r"$\Omega_c$")
-ax.set_ylabel(r"$\Omega_x$")
+ax.set_ylabel(r"$w$")
 
 ax.legend()
 
 plt.tight_layout()
 
-plt.savefig("regiao_Omegac_Omegax.png", dpi=300)
+plt.savefig("regiaof_Omegac_w.png", dpi=600)
 
 plt.close()
+
 # Gráfico 2: Omegac x H0
 
 
 fig, ax = plt.subplots(figsize=(8,6))
 
 ax.fill(
-    df["Omegac2"],
-    df["H_0"],
+    Omegac2_a,
+    H,
     alpha=0.3,
     color="blue"
 )
 
 ax.plot(
-    df["Omegac2"],
-    df["H_0"],
-    color="blue"
+   Omegac2_a,
+   H,
+   color="blue"
 )
 
 # ponto best-fit
@@ -178,7 +233,7 @@ ax.scatter(
     color="black",
     marker="x",
     s=100,
-    label="Best-fit"
+    label="Estimativa"
 )
 
 ax.set_xlabel(r"$\Omega_c$")
@@ -188,7 +243,7 @@ ax.legend()
 
 plt.tight_layout()
 
-plt.savefig("regiao_Omegac_H0.png", dpi=300)
+plt.savefig("regiaof_Omegac_H0.png", dpi=600)
 
 plt.close()
 
@@ -197,38 +252,515 @@ plt.close()
 fig, ax = plt.subplots(figsize=(8,6))
 
 ax.fill(
-    df["H_02"],
-    df["Omegax2"],
+    H2,
+    w2_a,
     alpha=0.3,
     color="green"
 )
 
 ax.plot(
-    df["H_02"],
-    df["Omegax2"],
+    H2,
+    w2_a,
     color="green"
 )
 
 # ponto best-fit
 ax.scatter(
     best_H0,
-    best_Omegax,
+    best_w,
     color="black",
     marker="x",
     s=100,
-    label="Best-fit"
+    label="Estimativa"
 )
 
 ax.set_xlabel(r"$H_0$")
-ax.set_ylabel(r"$\Omega_x$")
+ax.set_ylabel(r"$w$")
 
 ax.legend()
 
 plt.tight_layout()
 
-plt.savefig("regiao_H0_Omegax.png", dpi=300)
+plt.savefig("regiaof_H0_w.png", dpi=600)
+
+plt.close()
+
+#############################
+fig, ax = plt.subplots(figsize=(8,6))
+
+ax.fill(
+    Omegac_M,
+    M_c,
+    alpha=0.3,
+    color="purple"
+)
+
+ax.plot(
+    Omegac_M,
+    M_c,
+    color="purple"
+)
+
+ax.scatter(
+    best_Omegac,
+    best_M,
+    color="black",
+    marker="x",
+    s=100,
+    label="Estimativa"
+)
+
+ax.set_xlabel(r"$\Omega_c$")
+ax.set_ylabel(r"$M$")
+
+ax.legend()
+
+plt.tight_layout()
+
+plt.savefig("regiaof_Omegac_M.png", dpi=600)
+
+plt.close()
+#######################
+fig, ax = plt.subplots(figsize=(8,6))
+
+ax.fill(
+    H_M,
+    M_h,
+    alpha=0.3,
+    color="orange"
+)
+
+ax.plot(
+    H_M,
+    M_h,
+    color="orange"
+)
+
+ax.scatter(
+    best_H0,
+    best_M,
+    color="black",
+    marker="x",
+    s=100,
+    label="Estimativa"
+)
+
+ax.set_xlabel(r"$H_0$")
+ax.set_ylabel(r"$M$")
+
+ax.legend()
+
+plt.tight_layout()
+
+plt.savefig("regiaof_H0_M.png", dpi=600)
+
+plt.close()
+############################
+fig, ax = plt.subplots(figsize=(8,6))
+
+ax.fill(
+    w_M,
+    M_w,
+    alpha=0.3,
+    color="brown"
+)
+
+ax.plot(
+    w_M,
+    M_w,
+    color="brown"
+)
+
+ax.scatter(
+    best_w,
+    best_M,
+    color="black",
+    marker="x",
+    s=100,
+    label="Estimativa"
+)
+
+ax.set_xlabel(r"$w$")
+ax.set_ylabel(r"$M$")
+
+ax.legend()
+
+plt.tight_layout()
+
+plt.savefig("regiaof_w_M.png", dpi=600)
 
 plt.close()
 
 
+#>======================================================<#
+#            Ajuste do módulo de distância/magnitude
+#             em função de z comparado
+#               com os dados do Pantheon+
+#>======================================================<#
 
+cov_data = np.loadtxt("Pantheon+SH0ES_STAT+SYS.cov", skiprows=1)
+print(cov_data)
+cov = cov_data.reshape((1701, 1701))
+
+print(cov.shape)
+
+dist = Nc.Distance.new(3.0)
+dist.prepare(cosmo)
+RH_Mpc = cosmo.RH_Mpc()
+M1 = snia_model.props.M1
+
+z_mod = np.linspace(0.001, 2.5, 1000)
+
+'''
+mu_mod=[]
+
+for z in z_mod:
+
+    dL = dist.luminosity(cosmo, z)*RH_Mpc
+    mu_modv = 5.0 * np.log10(dL) + 25.0
+    mu_mod.append(mu_modv)
+'''  
+
+
+mb_mod=[]
+
+for z in z_mod:
+
+    dL = dist.luminosity(cosmo, z)*RH_Mpc
+    mb_modv = 5.0 * np.log10(dL) + 25.0 + M1
+    mb_mod.append(mb_modv)
+
+
+'''
+mu_mod=[]
+
+for z in z_mod:
+
+    dL = dist.luminosity(cosmo, z)*RH_Mpc
+    mu_modv = 5.0 * np.log10(dL) + 25.0
+    mu_mod.append(mu_modv)
+'''  
+
+data = pd.read_csv(
+    "Pantheon+SH0ES.dat",
+    sep="\s+",
+    comment="#",
+    engine="python"
+)
+
+print(data.columns)
+
+# colunas do Pantheon+
+# valor de z para diagramas de hubble
+z_data = data["zHD"].values
+z_err = data["zHDERR"].values
+# valor de mu
+mu_data = data["MU_SH0ES"].values
+sigma_data = data["MU_SH0ES_ERR_DIAG"].values
+# valor de mb corrigido
+mb_c_data = data["m_b_corr"].values
+mb_c_err = data["m_b_corr_err_DIAG"].values
+
+'''
+residuos=[]
+mu_mod_data=[]
+
+for z in z_data:
+
+    dL = dist.luminosity(cosmo, z)*RH_Mpc
+    mu_mod_datav = 5.0 * np.log10(dL) + 25.0
+    mu_mod_data.append(mu_mod_datav)
+    
+for mu1 in mu_data:
+    for mu2 in mu_mod_data:
+        residuo_v = mu1 - mu2
+        residuos.append(residuo_v)
+'''
+  
+#residuosb=[]
+mb_mod_data=[]
+
+for z in z_data:
+
+    dL = dist.luminosity(cosmo, z)*RH_Mpc
+    mb_mod_datav = 5.0 * np.log10(dL) + 25.0 + M1
+    mb_mod_data.append(mb_mod_datav)
+
+''' forma errada    
+for mu1 in mb_c_data:
+    for mu2 in mb_mod_data:
+        residuo_v = mu1 - mu2
+        residuosb.append(residuo_v)    
+''' # forma certa
+
+residuosb = np.array(mb_c_data) - np.array(mb_mod_data)    
+
+produtodireito = np.linalg.solve(cov, residuosb)
+produtoesquerdo = residuosb * produtodireito
+
+print(produtodireito)
+print(produtoesquerdo)
+
+plt.figure(figsize=(8,6))
+
+plt.errorbar(
+    z_data,
+    residuosb,
+    yerr=sigma_data,
+    fmt='.',
+    ms=3,
+    alpha=0.4,
+    label='Resíduos frequentistas.'
+)
+
+#plt.scatter(
+#    z_data,
+#    residuosb,
+#    color='black',
+#    s=8,
+#    zorder=3
+#)
+
+plt.axhline(y=0, color='black', linestyle='--', linewidth=1)
+plt.xscale('log')
+plt.xlabel(r"$z$")
+plt.ylabel(r"$m_{b}^{obs} - m_{b}^{modelo}$")
+
+plt.legend()
+
+plt.tight_layout()
+
+plt.savefig("residuo_frequentista com log", dpi=300)
+
+plt.figure(figsize=(8,6))
+
+plt.errorbar(
+    z_data,
+    residuosb,
+    yerr=sigma_data,
+    fmt='.',
+    ms=3,
+    alpha=0.4,
+    label='Resíduos frequentistas.'
+)
+
+#plt.scatter(
+#    z_data,
+#    residuosb,
+#    color='black',
+#    s=8,
+#    zorder=3
+#)
+
+plt.axhline(y=0, color='black', linestyle='--', linewidth=1)
+plt.xlabel(r"$z$")
+plt.ylabel(r"$m_{b}^{obs} - m_{b}^{modelo}$")
+
+plt.legend()
+
+plt.tight_layout()
+
+plt.savefig("residuo_frequentista sem log", dpi=300)
+
+plt.figure(figsize=(8,6))
+
+plt.errorbar(
+    z_data,
+    mb_c_data,
+    xerr=z_err,
+    yerr=sigma_data,
+    fmt='.',
+    ms=3,
+    alpha=0.4,
+    label='Pantheon+SHOES.'
+)
+
+plt.plot(
+    z_mod,
+    mb_mod,
+    lw=2,
+    label=r'Ajuste frequentista de $m_b$.'
+)
+
+plt.xscale('log')
+plt.xlabel(r"$z$")
+plt.ylabel(r"$m_b$")
+
+plt.legend()
+
+plt.tight_layout()
+
+plt.savefig("ajuste_frequentista com log", dpi=300)
+
+plt.figure(figsize=(8,6))
+
+plt.errorbar(
+    z_data,
+    mb_c_data,
+    xerr=z_err,
+    yerr=sigma_data,
+    fmt='.',
+    ms=3,
+    alpha=0.4,
+    label='Pantheon+SHOES.'
+)
+
+plt.plot(
+    z_mod,
+    mb_mod,
+    lw=2,
+    label=r'Ajuste frequentista de $m_b$.'
+)
+
+
+plt.xlabel(r"$z$")
+plt.ylabel(r"$m_b$")
+
+plt.legend()
+
+plt.tight_layout()
+
+plt.savefig("ajuste_frequentista sem log", dpi=300)
+''
+
+
+
+'''
+residuos=[]
+mu_mod_data=[]
+
+for z in z_data:
+
+    dL = dist.luminosity(cosmo, z)*RH_Mpc
+    mu_mod_datav = 5.0 * np.log10(dL) + 25.0
+    mu_mod_data.append(mu_mod_datav)
+    
+for mu1 in mu_data:
+    for mu2 in mu_mod_data:
+        residuo_v = mu1 - mu2
+        residuos.append(residuo_v)
+  
+    
+    
+
+plt.figure(figsize=(8,6))
+
+plt.errorbar(
+    z_data,
+    residuos,
+    yerr=sigma_data,
+    fmt='.',
+    ms=3,
+    alpha=0.4,
+    label='Pantheon+SHOES.'
+)
+
+
+
+plt.xlabel(r"$z$")
+plt.ylabel(r"$\mu$")
+
+plt.legend()
+
+plt.tight_layout()
+
+plt.savefig("residuo_bayesiano", dpi=300)
+
+plt.figure(figsize=(8,6))
+
+plt.errorbar(
+    z_data,
+    mu_data,
+    yerr=sigma_data,
+    fmt='.',
+    ms=3,
+    alpha=0.4,
+    label='Pantheon+SHOES.'
+)
+
+plt.plot(
+    z_mod,
+    mu_mod,
+    lw=2,
+    label=r'Ajuste bayesiano de $\mu$.'
+)
+
+
+plt.xlabel(r"$z$")
+plt.ylabel(r"$\mu$")
+
+plt.legend()
+
+plt.tight_layout()
+
+plt.savefig("ajuste_bayesiano sem log", dpi=300)
+'''
+
+
+
+
+#>======================================================<#
+#            Parâmetros de qualidade
+#>======================================================<#
+#histograma=[]
+
+
+''' forma errada     
+for res in residuosb:
+    for err in z_err:
+        histograma_v = res/err
+        histograma.append(histograma_v)
+''' # forma certa
+L = np.linalg.cholesky(cov)
+r = np.linalg.solve(L, residuosb)
+x = np.linspace(-5,5,1000)
+
+histograma = r
+
+histograma = np.array(histograma)
+
+plt.figure(figsize=(8,5))
+plt.hist(histograma, bins=30, density=True,  label="Resíduo corrigido.")
+
+plt.plot(
+    x,
+    norm.pdf(x,0,1),
+    lw=2,
+    label=r'$N(0,1)$'
+)
+
+plt.xlabel("Resíduo corrigido.")
+plt.ylabel("Densidade")
+plt.title("Histograma dos resíduos frequentistas")
+plt.legend()
+plt.savefig("Histogramafrequentista", dpi=300) 
+
+# teste de kolmogorov
+'''
+# não esta dando algo interessante
+''
+D, p = kstest(r, 'norm')
+
+# usando a distribuição de kolmogorov para calcular o valor críitico
+D_crit = kstwo.ppf(0.95, len(r))
+
+print(p)
+print("D =", D)
+print("D_crit =", D_crit)
+
+if D > D_crit:
+    print("Rejeita H0")
+else:
+    print("Não rejeita H0")
+''
+'''
+# média e desvio dos ruídos
+print("média =", np.mean(r))
+print("desvio =", np.std(r, ddof=1))
+print("mínimo =", np.min(r))
+print("máximo =", np.max(r))
+
+'''
+stats.probplot(r, dist="norm", plot=plt)
+plt.savefig("probplot", dpi=300)
+''' 
