@@ -8,22 +8,34 @@ from getdist import plots
 import matplotlib.pyplot as plt
 from numcosmo_py import Nc, Ncm
 from numcosmo_py.plotting import mcat_to_catalog_data
+from scipy.stats import gaussian_kde
+from matplotlib.lines import Line2D
+from datetime import datetime
+from pathlib import Path
+from scipy.stats import norm
+#import arviz as az
+#>======================================================<#
+#      Definindo modelos cosmológicos e astrofísicos.
+#                         &
+#      Escolhendo qual conjunto de dados será usado.                 
+#>======================================================<#
 
 # Inicializando a biblioteca
 Ncm.cfg_init()
 
 # Escolhendo o modelo
-cosmo = Nc.HICosmoLCDM()
+cosmo = Nc.HICosmoDEXcdm()
 
 #Reparametrização.
-#cosmo.omega_xomega_k()
-
+cosmo.omega_x2omega_k()
+#Universo plano
+cosmo.param_set_by_name("Omegak", 0.0)
 
 #Escolhendo quais parâmetros entraão no processo de inferência
 cosmo.props.H0_fit = True
 cosmo.props.Omegab_fit = False
 cosmo.props.Omegac_fit = True
-cosmo.props.Omegax_fit = True
+cosmo.props.w_fit = True
 
 #Incializando o dist e definindo o redshift de optmização
 dist = Nc.Distance(zf=3.0)
@@ -31,8 +43,11 @@ dist = Nc.Distance(zf=3.0)
 
 # Definindo o modelo astrofísico de supernova
 snia_idval = Nc.DataSNIAId.COV_PANTHEON_PLUS_SH0ES_SYS_STAT
+print(snia_idval)
 snia_model = Nc.SNIADistCov.new_by_id(dist, snia_idval)
-snia_model.props.M1_fit = False
+snia_model.props.M1_fit = True
+#snia_model.props.alpha = 0.148
+#snia_model.props.beta =  3.09
 
 # Definindo o modelo a ser usado no processo de Restrição
 mset = Ncm.MSet()
@@ -48,6 +63,11 @@ dset.append_data(snia)
 # Definindo outra parte da Hipótese
 lh = Ncm.Likelihood(dataset=dset)
 
+#>======================================================<#
+#                  Ajuste frequêntista.
+#>======================================================<#
+
+
 # Definindo os aspectos do Fit, método de encontrar máximos e mínimos, qual likelihood está sendo empregada, modelo, método de cálculo de derivada. 
 fit = Ncm.Fit.factory(
     Ncm.FitType.NLOPT, "ln-neldermead", lh, mset, Ncm.FitGradType.NUMDIFF_FORWARD
@@ -62,14 +82,36 @@ fit.fisher()
 
 fit.log_covar()
 
+'''
+# Parte computacionalmente pesada
+# dedicada a comparação de regiões
+'''
+lhr2dcw = Ncm.LHRatio2d.new(fit,mset.fparam_get_pi_by_name("Omegac"),mset.fparam_get_pi_by_name("w"),1.0e-2)
+best_w1 = cosmo.props.w
+best_Omegac1 = cosmo.props.Omegac
 
+regiaocw = lhr2dcw.fisher_border(Ncm.C.stats_1sigma(), 50.0, Ncm.FitRunMsgs.SIMPLE)
+Omegac_a = np.array(regiaocw.p1.dup_array())
+w_a = np.array(regiaocw.p2.dup_array())
+
+regiaocw2 = lhr2dcw.conf_region(Ncm.C.stats_1sigma(), 50.0, Ncm.FitRunMsgs.SIMPLE)
+Omegac_a2 = np.array(regiaocw2.p1.dup_array())
+w_a2 = np.array(regiaocw2.p2.dup_array())
+'''
+'''
+
+#>======================================================<#
+#                          MCMC
+#>======================================================<#
 
 #
-# Definindo Kernel, proposal covariance e prior
+# Definindo Kernel, proposal covariance matrix e priors
 #
 kernel = Ncm.MSetTransKernGauss.new(0)
 kernel.set_mset(mset)
+# Escolhendo priors uniformes do modelo
 kernel.set_prior_from_mset()
+# Usando a matriz de covariância obtida anteriomente
 kernel.set_cov(fit.get_covar())
 
 
@@ -86,77 +128,134 @@ mcmc = Ncm.FitMCMC.new(
 )
 
 #Criando o arquivo que contém a cadeia
-mcmc.set_data_file("MCMC")
+mcmc.set_data_file("MCMC3")
 
 mcmc.start_run()
-
+'''
+# Se você quiser realizar testes no código
+''
 #Número de amostras
 mcmc.run(3000)
+'' 
+'''
+
+'''
+'''
+# Você já se perguntou quantas amostras são necessárias na sua análise?
+# Não se preocupe, pois a Numcosmo responde para você.
+# Basta escolher um número mínimo de amostras e o erro relativo 
+# desejado para o maior erro relativo entres os parâmetros 
+mcmc.run_lre(5000, 1.0e-3)
+'''
+'''
+# aqui percebemos um dos problemas de empregar o mcmc metropolis hastings
+# obter um erro relativo para o maior erro é um processo muito demorado com uma única cadeia
+# Por essa razão métodos que rodam multiplas cadeias ao mesmo tempo são superiores. É melhor usar o ESMCMC.
 
 mcmc.end_run()
+#mcmc.get_accept_ratio()
+#mcmc.run_lre(1.0e3)
 
 # Cálcula a média do posterior e a matriz de covariância e correlação
 # e depois mostra como resultados
 mcmc.mean_covar()
 fit.log_covar()
 
+#taxa de aceitação final
+# por algum motivo retorna nan
+# a taxa de aceitação pode ser observada no log do mcmc
+
+
+
+#>======================================================<#
+#         Trace plots, evolução do posterior
+#             e gráfico de triângulo.
+#>======================================================<#
+# fontes e tamanhos bons para TCC
+plt.rcParams.update({
+    "font.family": "serif",
+    "font.size": 14,
+    "axes.labelsize": 16,
+    "axes.titlesize": 16,
+    "legend.fontsize": 12,
+})
+
 #Essa parte do código monta o gráfico de triângulo.
+#Estamos empregando a biblioteca getdist para tal.
+
+# obtendo o catálogo do arquivo MCMC
 mcat = mcmc.get_catalog()
+# usando o dist para converter esse catalogo
 cd = mcat_to_catalog_data(mcat, name="MCMC")
+# chamando a função de plot do dist
 g = plots.get_subplot_plotter()
+# criando o gráfico de triângulo
 g.triangle_plot(cd.to_mcsamples(), shaded=False, filled=True)
 plt.savefig("triangle2.png", dpi=300, bbox_inches="tight")
-
-# Número de amostras
 nrows = mcat.len()
 
+'''
+# Se você trabalhar com amostras muito grandes,
+# seu sistema irá matar o programa por causa dessa parte.
+'''
+# Número de amostras
+
+passo1 = 100
 # Extraindo valores da cadeia em cada dimensão.
 H0_chain      = []
 Omegac_chain  = []
-Omegax_chain  = []
+w_chain  = []
+M_chain = []
 
-for i in range(nrows):
+for i in range(0,nrows,100):
     row = mcat.peek_row(i)
-
     # índices dos parâmetros no modelo
     H0_chain.append(row.get(1))
     Omegac_chain.append(row.get(2))
-    Omegax_chain.append(row.get(3))
+    w_chain.append(row.get(3))
+    M_chain.append(row.get(4))
+
 
 # Convertendo para numpy
 H0_chain = np.array(H0_chain)
 Omegac_chain = np.array(Omegac_chain)
-Omegax_chain = np.array(Omegax_chain)
+w_chain = np.array(w_chain)
+M_chain = np.array(M_chain)
+'''
+'''
 
 # Extraindo o valor do posterior para cada elemento da cadeia.
+passo2 = 100
 posterior = []
-
-for i in range(nrows):
-
+passos=[]
+for i in range(0,nrows, passo2):
     row = mcat.peek_row(i)
-
     # valor do posterior
     posterior.append(row.get(0))
-
+    passos.append(i)
 posterior = np.array(posterior)
 
 # Índice das amostras
-steps = np.arange(nrows)
-
+#steps = np.arange(nrows)
+posterior = np.array(posterior)
+passos = np.array(passos)
 
 # Trace plots das amostras.
 
-fig, ax = plt.subplots(3, 1, figsize=(10, 8), sharex=True)
+fig, ax = plt.subplots(4, 1, figsize=(10, 8), sharex=True)
 
-ax[0].plot(steps, H0_chain, lw=0.5)
+ax[0].plot(passos, H0_chain, lw=0.5)
 ax[0].set_ylabel(r"$H_0$")
 
-ax[1].plot(steps, Omegac_chain, lw=0.5)
+ax[1].plot(passos, Omegac_chain, lw=0.5)
 ax[1].set_ylabel(r"$\Omega_c$")
 
-ax[2].plot(steps, Omegax_chain, lw=0.5)
-ax[2].set_ylabel(r"$\Omega_x$")
-ax[2].set_xlabel("MCMC step")
+ax[2].plot(passos, w_chain, lw=0.5)
+ax[2].set_ylabel(r"$w$")
+
+ax[3].plot(passos, M_chain, lw=0.5)
+ax[3].set_ylabel(r"$M$")
+ax[3].set_xlabel("MCMC step")
 
 plt.tight_layout()
 plt.savefig("traceplot.png", dpi=300)
@@ -167,7 +266,7 @@ steps = np.arange(nrows)
 
 plt.figure(figsize=(10,5))
 
-plt.plot(steps, posterior, lw=0.5)
+plt.plot(passos, posterior, lw=0.5)
 
 plt.xlabel("MCMC step")
 plt.ylabel("log posterior")
@@ -176,8 +275,535 @@ plt.tight_layout()
 
 plt.savefig("evoluçaoposterior.png", dpi=300)
 
+#>======================================================<#
+#            Intervalos de credibilidade
+#>======================================================<#
+
+# convertendo
+samples = cd.to_mcsamples()
+
+stats = samples.getMargeStats()
+
+a = stats.parWithName("H0")
+b = stats.parWithName("w")
+c = stats.parWithName("Omegac")
+d = stats.parWithName("M1")
+
+# aqui ele vai imprimir as bordas dos intervalos e o tipo de intervalo
+print("Intervalos de credibilidade:")
+print("H_0:",a.limits[0])
+print("w:", b.limits[0])
+print("Omegac:",c.limits[0])
+print("M1:",d.limits[0])
+
+print("Distâncias até as bordas dos intervalos")
+# vamos extrair as bordas
+Upper_a = a.limits[0].upper
+Lower_a = a.limits[0].lower
+
+ac= cosmo.props.H0
+dist_a_upper = Upper_a - ac
+dist_a_Lower = Lower_a - ac
+print("H_0:",dist_a_upper,dist_a_Lower)
+
+# para w
+Upper_b = b.limits[0].upper
+Lower_b = b.limits[0].lower
+
+bc = cosmo.props.w
+dist_b_upper = Upper_b - bc
+dist_b_lower = Lower_b - bc
+
+print("w:", dist_b_upper, dist_b_lower)
+
+# para M1
+Upper_d = d.limits[0].upper
+Lower_d = d.limits[0].lower
+
+dc = snia_model.props.M1
+dist_d_upper = Upper_d - dc
+dist_d_lower = Lower_d - dc
+
+print("M1:", dist_d_upper, dist_d_lower)
+
+# para Omegac
+Upper_c = c.limits[0].upper
+Lower_c = c.limits[0].lower
+
+cc = cosmo.props.Omegac
+dist_c_upper = Upper_c - cc
+dist_c_lower = Lower_c - cc
+
+print("Omega_c:", dist_c_upper, dist_c_lower)
+
+
+#>======================================================<#
+#            Ajuste do módulo de distância/magnitude
+#             em função de z comparado
+#               com os dados do Pantheon+
+#>======================================================<#
+
+cov_data = np.loadtxt("Pantheon+SH0ES_STAT+SYS.cov", skiprows=1)
+print(cov_data)
+cov = cov_data.reshape((1701, 1701))
+
+print(cov.shape)
+
+dist = Nc.Distance.new(3.0)
+dist.prepare(cosmo)
+RH_Mpc = cosmo.RH_Mpc()
+M1 = snia_model.props.M1
+
+z_mod = np.linspace(0.001, 2.5, 1000)
+
+'''
+mu_mod=[]
+
+for z in z_mod:
+
+    dL = dist.luminosity(cosmo, z)*RH_Mpc
+    mu_modv = 5.0 * np.log10(dL) + 25.0
+    mu_mod.append(mu_modv)
+'''  
+
+
+mb_mod=[]
+
+for z in z_mod:
+
+    dL = dist.luminosity(cosmo, z)*RH_Mpc
+    mb_modv = 5.0 * np.log10(dL) + 25.0 + M1
+    mb_mod.append(mb_modv)
+
+
+'''
+mu_mod=[]
+
+for z in z_mod:
+
+    dL = dist.luminosity(cosmo, z)*RH_Mpc
+    mu_modv = 5.0 * np.log10(dL) + 25.0
+    mu_mod.append(mu_modv)
+'''  
+
+data = pd.read_csv(
+    "Pantheon+SH0ES.dat",
+    sep="\s+",
+    comment="#",
+    engine="python"
+)
+
+print(data.columns)
+
+# colunas do Pantheon+
+# valor de z para diagramas de hubble
+z_data = data["zHD"].values
+z_err = data["zHDERR"].values
+# valor de mu
+mu_data = data["MU_SH0ES"].values
+sigma_data = data["MU_SH0ES_ERR_DIAG"].values
+# valor de mb corrigido
+mb_c_data = data["m_b_corr"].values
+mb_c_err = data["m_b_corr_err_DIAG"].values
+
+'''
+residuos=[]
+mu_mod_data=[]
+
+for z in z_data:
+
+    dL = dist.luminosity(cosmo, z)*RH_Mpc
+    mu_mod_datav = 5.0 * np.log10(dL) + 25.0
+    mu_mod_data.append(mu_mod_datav)
+    
+for mu1 in mu_data:
+    for mu2 in mu_mod_data:
+        residuo_v = mu1 - mu2
+        residuos.append(residuo_v)
+'''
+  
+#residuosb=[]
+mb_mod_data=[]
+
+for z in z_data:
+
+    dL = dist.luminosity(cosmo, z)*RH_Mpc
+    mb_mod_datav = 5.0 * np.log10(dL) + 25.0 + M1
+    mb_mod_data.append(mb_mod_datav)
+
+''' forma errada    
+for mu1 in mb_c_data:
+    for mu2 in mb_mod_data:
+        residuo_v = mu1 - mu2
+        residuosb.append(residuo_v)    
+''' # forma certa
+
+residuosb = np.array(mb_c_data) - np.array(mb_mod_data)    
+
+produtodireito = np.linalg.solve(cov, residuosb)
+produtoesquerdo = residuosb * produtodireito
+
+print(produtodireito)
+print(produtoesquerdo)
+
+plt.figure(figsize=(8,6))
+
+plt.errorbar(
+    z_data,
+    residuosb,
+    yerr=sigma_data,
+    fmt='.',
+    ms=3,
+    alpha=0.2,
+    label='Resíduos bayesianos.'
+)
+
+#plt.scatter(
+#    z_data,
+#    residuosb,
+#    color='black',
+#    s=8,
+#    zorder=3
+#)
+
+plt.axhline(y=0, color='black', linestyle='--', linewidth=1)
+plt.xscale('log')
+plt.xlabel(r"$z$")
+plt.ylabel(r"$m_{b}^{obs} - m_{b}^{modelo}$")
+
+plt.legend()
+
+plt.tight_layout()
+
+plt.savefig("residuo_bayesiano com log", dpi=300)
+
+plt.figure(figsize=(8,6))
+
+plt.errorbar(
+    z_data,
+    residuosb,
+    yerr=sigma_data,
+    fmt='.',
+    ms=3,
+    alpha=0.2,
+    label='Resíduos bayesianos.'
+)
+
+#plt.scatter(
+#    z_data,
+#    residuosb,
+#    color='black',
+#    s=8,
+#    zorder=3
+#)
+
+plt.axhline(y=0, color='black', linestyle='--', linewidth=1)
+plt.xlabel(r"$z$")
+plt.ylabel(r"$m_{b}^{obs} - m_{b}^{modelo}$")
+
+plt.legend()
+
+plt.tight_layout()
+
+plt.savefig("residuo_bayesiano sem log", dpi=300)
+
+plt.figure(figsize=(8,6))
+
+plt.errorbar(
+    z_data,
+    mb_c_data,
+    xerr=z_err,
+    yerr=sigma_data,
+    fmt='.',
+    ms=3,
+    alpha=0.2,
+    label='Pantheon+SHOES.'
+)
+
+plt.plot(
+    z_mod,
+    mb_mod,
+    lw=2,
+    label=r'Ajuste bayesiano de $m_b$.'
+)
+
+plt.xscale('log')
+plt.xlabel(r"$z$")
+plt.ylabel(r"$m_b$")
+
+plt.legend()
+
+plt.tight_layout()
+
+plt.savefig("ajuste_bayesiano com log", dpi=300)
+
+plt.figure(figsize=(8,6))
+
+plt.errorbar(
+    z_data,
+    mb_c_data,
+    xerr=z_err,
+    yerr=sigma_data,
+    fmt='.',
+    ms=3,
+    alpha=0.2,
+    label='Pantheon+SHOES.'
+)
+
+plt.plot(
+    z_mod,
+    mb_mod,
+    lw=2,
+    label=r'Ajuste bayesiano de $m_b$.'
+)
+
+
+plt.xlabel(r"$z$")
+plt.ylabel(r"$m_b$")
+
+plt.legend()
+
+plt.tight_layout()
+
+plt.savefig("ajuste_bayesiano sem log", dpi=300)
+
+'''
+residuos=[]
+mu_mod_data=[]
+
+for z in z_data:
+
+    dL = dist.luminosity(cosmo, z)*RH_Mpc
+    mu_mod_datav = 5.0 * np.log10(dL) + 25.0
+    mu_mod_data.append(mu_mod_datav)
+    
+for mu1 in mu_data:
+    for mu2 in mu_mod_data:
+        residuo_v = mu1 - mu2
+        residuos.append(residuo_v)
+  
+    
+    
+
+plt.figure(figsize=(8,6))
+
+plt.errorbar(
+    z_data,
+    residuos,
+    yerr=sigma_data,
+    fmt='.',
+    ms=3,
+    alpha=0.4,
+    label='Pantheon+SHOES.'
+)
+
+
+
+plt.xlabel(r"$z$")
+plt.ylabel(r"$\mu$")
+
+plt.legend()
+
+plt.tight_layout()
+
+plt.savefig("residuo_bayesiano", dpi=300)
+
+plt.figure(figsize=(8,6))
+
+plt.errorbar(
+    z_data,
+    mu_data,
+    yerr=sigma_data,
+    fmt='.',
+    ms=3,
+    alpha=0.4,
+    label='Pantheon+SHOES.'
+)
+
+plt.plot(
+    z_mod,
+    mu_mod,
+    lw=2,
+    label=r'Ajuste bayesiano de $\mu$.'
+)
+
+
+plt.xlabel(r"$z$")
+plt.ylabel(r"$\mu$")
+
+plt.legend()
+
+plt.tight_layout()
+
+plt.savefig("ajuste_bayesiano sem log", dpi=300)
+'''
 
 
 
 
+#>======================================================<#
+#            Parâmetros de qualidade
+#>======================================================<#
+#histograma=[]
 
+
+''' forma errada     
+for res in residuosb:
+    for err in z_err:
+        histograma_v = res/err
+        histograma.append(histograma_v)
+''' # forma certa
+L = np.linalg.cholesky(cov)
+r = np.linalg.solve(L, residuosb)
+x = np.linspace(-5,5,1000)
+
+histograma = r
+
+histograma = np.array(histograma)
+
+plt.figure(figsize=(8,5))
+plt.hist(histograma, bins=30, density=True,  label="Resíduo corrigido.")
+
+plt.plot(
+    x,
+    norm.pdf(x,0,1),
+    lw=2,
+    label=r'$N(0,1)$'
+)
+
+plt.xlabel("Resíduo corrigido.")
+plt.ylabel("Densidade")
+plt.title("Histograma dos resíduos bayesianos")
+plt.legend()
+plt.savefig("Histogramabayesiano", dpi=300) 
+
+
+# teste de kolmogorov
+'''
+# não esta dando algo interessante
+''
+D, p = kstest(r, 'norm')
+
+# usando a distribuição de kolmogorov para calcular o valor críitico
+D_crit = kstwo.ppf(0.95, len(r))
+
+print(p)
+print("D =", D)
+print("D_crit =", D_crit)
+
+if D > D_crit:
+    print("Rejeita H0")
+else:
+    print("Não rejeita H0")
+''
+'''
+# média e desvio dos ruídos
+print("média =", np.mean(r))
+print("desvio =", np.std(r, ddof=1))
+print("mínimo =", np.min(r))
+print("máximo =", np.max(r))
+
+'''
+stats.probplot(r, dist="norm", plot=plt)
+plt.savefig("probplot", dpi=300)
+''' 
+
+
+
+#>======================================================<#
+#            Comparativo de regiões
+#>======================================================<#
+'''
+'''
+
+g = plots.get_subplot_plotter(width_inch=6)
+g.settings.num_plot_contours = 1
+g.plot_2d(
+    samples,
+    'Omegac',
+    'w',
+    filled=False,
+    colors=['blue'],
+    legend_labels=['Região de credibilidade (1σ)']
+)
+
+ax = plt.gca()
+
+# Perfil de verossimilhança
+ax.plot(
+    Omegac_a2,
+    w_a2,
+    color='red',
+    lw=2,
+    label='Borda por perfil de verossimilhança (1σ)'
+)
+
+# Fisher
+ax.plot(
+    Omegac_a,
+    w_a,
+    '--',
+    color='green',
+    lw=2,
+    label='Borda Fisher (1σ)'
+)
+
+# Melhor ajuste
+ax.plot(
+    best_Omegac1,
+    best_w1,
+    'ko',
+    ms=6,
+    label='Estimadores frequentistas'
+)
+
+# por algum motivo a legenda da região de credibilidade não está aparecendo.
+# isso é uma gambiarra para forçar ela aparecer
+handles = [
+    Line2D([0], [0], color='blue', lw=2,
+           label='Região de credibilidade (1σ)'),
+    Line2D([0], [0], color='red', lw=2,
+           label='Borda por perfil de verossimilhança (1σ)'),
+    Line2D([0], [0], color='green', lw=2, ls='--',
+           label='Borda Fisher (1σ)'),
+    Line2D([0], [0], marker='o', color='k', lw=0,
+           markersize=6,
+           label='Estimadores frequentistas')
+]
+
+ax.legend(handles=handles, fontsize=12)
+
+plt.savefig(
+    "comparacao_frequentista_bayesiana.png",
+    dpi=300
+)
+
+
+
+#>======================================================<#
+#       Salvando resultados para utilizar depois.
+#>======================================================<#
+
+'''
+#inacabado, pois a numcosmo já faz isso
+''
+timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+outdir = Path(f"run_{timestamp}")
+outdir.mkdir(parents=True, exist_ok=True)
+
+
+np.savez(
+    outdir / "regioes.npz",
+    fisher_Omegac=Omegac_a,
+    fisher_w=w_a,
+    conf_Omegac=Omegac_a2,
+    conf_w=w_a2
+)
+
+
+np.save(
+    outdir / "mcmc_samples.npy",
+    samples.samples
+)
+''
+'''
